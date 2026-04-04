@@ -15,7 +15,7 @@ CONFIG_PATH = "config.ini"
 
 # 测试模式开关：默认：False
 # 设为 True 时，按 't' 视为输入正确，按其他键视为输入错误
-TEST_MODE = True
+TEST_MODE = False
 
 
 def ensure_config():
