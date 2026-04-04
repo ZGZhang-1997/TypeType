@@ -1,10 +1,15 @@
+import os
 import re
+import sys
 
 import nltk
 from nltk.tokenize import sent_tokenize
 
 
 def ensure_nltk_data():
+    # PyInstaller 打包时，nltk 数据在临时解压目录中
+    if getattr(sys, "frozen", False):
+        nltk.data.path.insert(0, os.path.join(sys._MEIPASS, "nltk_data"))
     try:
         nltk.data.find("tokenizers/punkt_tab")
     except LookupError:

@@ -1,15 +1,22 @@
 import hashlib
 import json
 import os
+import sys
 
 import deepl
 
 
+def _default_cache_dir():
+    if getattr(sys, "frozen", False):
+        return os.path.join(os.path.dirname(sys.executable), "data")
+    return "data"
+
+
 class DeepLTranslator:
-    def __init__(self, api_key, cache_dir="data"):
+    def __init__(self, api_key, cache_dir=None):
         self._translator = deepl.Translator(api_key)
-        self._cache_dir = cache_dir
-        self._cache_path = os.path.join(cache_dir, "translation_cache.json")
+        self._cache_dir = cache_dir or _default_cache_dir()
+        self._cache_path = os.path.join(self._cache_dir, "translation_cache.json")
         self._cache = self._load_cache()
 
     def _load_cache(self):

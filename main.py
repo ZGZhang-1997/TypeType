@@ -4,6 +4,12 @@ import sys
 import tkinter as tk
 from tkinter import filedialog, messagebox
 
+# PyInstaller 单文件模式下，获取 exe 所在目录
+if getattr(sys, "frozen", False):
+    APP_DIR = os.path.dirname(sys.executable)
+else:
+    APP_DIR = os.path.dirname(os.path.abspath(__file__))
+
 from app import TypeTypeApp
 from audio_manager import AudioManager
 from progress import get_saved_book_path, load_progress, clear_progress
@@ -11,7 +17,7 @@ from text_processor import load_book, split_sentences, ensure_nltk_data
 from translator import DeepLTranslator
 
 
-CONFIG_PATH = "config.ini"
+CONFIG_PATH = os.path.join(APP_DIR, "config.ini")
 
 # 测试模式开关：默认：False
 # 设为 True 时，按 't' 视为输入正确，按其他键视为输入错误
@@ -62,7 +68,7 @@ def clear_all_cache():
     import shutil
 
     clear_progress()
-    cache_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+    cache_dir = os.path.join(APP_DIR, "data")
     for name in ("translation_cache.json", "audio_cache"):
         p = os.path.join(cache_dir, name)
         if os.path.isdir(p):
