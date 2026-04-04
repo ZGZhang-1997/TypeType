@@ -1,5 +1,6 @@
 import os
 import re
+import sys
 import threading
 import time
 
@@ -12,7 +13,13 @@ class AudioManager:
     def __init__(self, voice="en-US-AriaNeural"):
         self._voice = voice
         self._tmp_dir = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)), "data", "audio_cache"
+            (
+                os.path.dirname(sys.executable)
+                if getattr(sys, "frozen", False)
+                else os.path.dirname(os.path.abspath(__file__))
+            ),
+            "data",
+            "audio_cache",
         )
         os.makedirs(self._tmp_dir, exist_ok=True)
         pygame.mixer.init(frequency=24000, size=-16, channels=1, buffer=512)

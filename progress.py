@@ -1,9 +1,16 @@
 import hashlib
 import json
 import os
+import sys
 
 
-PROGRESS_DIR = "data"
+def _app_dir():
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+PROGRESS_DIR = os.path.join(_app_dir(), "data")
 PROGRESS_PATH = os.path.join(PROGRESS_DIR, "progress.json")
 
 
