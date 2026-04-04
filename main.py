@@ -6,18 +6,22 @@ from tkinter import filedialog, messagebox
 
 from app import TypeTypeApp
 from audio_manager import AudioManager
-from progress import get_saved_book_path, load_progress
+from progress import get_saved_book_path, load_progress, clear_progress
 from text_processor import load_book, split_sentences, ensure_nltk_data
 from translator import DeepLTranslator
 
 
 CONFIG_PATH = "config.ini"
 
+# 测试模式开关：默认：False
+# 设为 True 时，按 't' 视为输入正确，按其他键视为输入错误
+TEST_MODE = True
+
 
 def ensure_config():
     if not os.path.exists(CONFIG_PATH):
         cfg = configparser.ConfigParser()
-        cfg["deepl"] = {"api_key": "YOUR_KEY_HERE"}
+        cfg["deepl"] = {"api_key_file": r"C:\path\to\deepl_key.txt"}
         cfg["audio"] = {"voice": "en-US-AriaNeural"}
         with open(CONFIG_PATH, "w", encoding="utf-8") as f:
             cfg.write(f)
@@ -27,16 +31,44 @@ def ensure_config():
 
 
 def get_api_key(cfg):
-    key = cfg.get("deepl", "api_key", fallback="YOUR_KEY_HERE")
-    if not key or key == "YOUR_KEY_HERE":
+    key_file = cfg.get("deepl", "api_key_file", fallback="")
+    if not key_file or key_file == r"C:\path\to\deepl_key.txt":
         messagebox.showwarning(
             "配置缺失",
-            f"请在 {os.path.abspath(CONFIG_PATH)} 中填入 DeepL API Key，\n"
+            f"请在 {os.path.abspath(CONFIG_PATH)} 中设置 api_key_file 为存放 DeepL API Key 的文件路径，\n"
             "然后重新启动程序。\n\n"
             "免费注册: https://www.deepl.com/pro#developer",
         )
         sys.exit(0)
+    if not os.path.exists(key_file):
+        messagebox.showwarning(
+            "文件不存在",
+            f"API Key 文件不存在：\n{key_file}\n\n"
+            "请创建该文件并写入 DeepL API Key（仅一行）。",
+        )
+        sys.exit(0)
+    key = open(key_file, encoding="utf-8").read().strip()
+    if not key:
+        messagebox.showwarning(
+            "Key 为空",
+            f"API Key 文件为空：\n{key_file}\n\n" "请在文件中写入 DeepL API Key。",
+        )
+        sys.exit(0)
     return key
+
+
+def clear_all_cache():
+    """清除所有缓存：进度、翻译缓存、音频缓存"""
+    import shutil
+
+    clear_progress()
+    cache_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+    for name in ("translation_cache.json", "audio_cache"):
+        p = os.path.join(cache_dir, name)
+        if os.path.isdir(p):
+            shutil.rmtree(p, ignore_errors=True)
+        elif os.path.isfile(p):
+            os.remove(p)
 
 
 def choose_book():
@@ -67,15 +99,61 @@ def main():
     if saved_book:
         # Ask user: continue or new book?
         root = tk.Tk()
-        root.withdraw()
-        answer = messagebox.askyesnocancel(
-            "继续上次进度",
-            f"检测到上次打字存档：\n{os.path.basename(saved_book)}\n\n"
-            "是 = 继续上次进度\n"
-            "否 = 选择新书\n"
-            "取消 = 退出",
+        root.title("是否继续上次进度")
+        root.resizable(False, False)
+        root.configure(bg="#2b2b2b")
+
+        result = {"value": None}
+
+        tk.Label(
+            root,
+            text=f"检测到上次打字存档：\n{os.path.basename(saved_book)}",
+            justify="left",
+            padx=20,
+            pady=15,
+            bg="#2b2b2b",
+            fg="#ffffff",
+            font=("Microsoft YaHei", 11),
+        ).pack()
+
+        btn_frame = tk.Frame(root, bg="#2b2b2b")
+        btn_frame.pack(pady=(0, 15))
+
+        btn_style = {
+            "bg": "#3c3c3c",
+            "fg": "#ffffff",
+            "activebackground": "#505050",
+            "activeforeground": "#ffffff",
+            "relief": "flat",
+            "font": ("Microsoft YaHei", 10),
+        }
+
+        def on_continue():
+            result["value"] = True
+            root.destroy()
+
+        def on_new():
+            result["value"] = False
+            root.destroy()
+
+        def on_cancel():
+            root.destroy()
+
+        tk.Button(
+            btn_frame, text="继续上次选择", width=14, command=on_continue, **btn_style
+        ).pack(side="left", padx=5)
+        tk.Button(
+            btn_frame, text="选择新书", width=14, command=on_new, **btn_style
+        ).pack(side="left", padx=5)
+        tk.Button(btn_frame, text="退出", width=8, command=on_cancel, **btn_style).pack(
+            side="left", padx=5
         )
-        root.destroy()
+
+        root.protocol("WM_DELETE_WINDOW", on_cancel)
+        root.eval("tk::PlaceWindow . center")
+        root.mainloop()
+
+        answer = result["value"]
 
         if answer is None:
             sys.exit(0)
@@ -83,6 +161,7 @@ def main():
             book_path = saved_book
         else:
             book_path = choose_book()
+            clear_all_cache()
     else:
         book_path = choose_book()
 
@@ -109,6 +188,7 @@ def main():
         start_index=start_index,
         translator=translator,
         audio_manager=audio,
+        test_mode=TEST_MODE,
     )
     app.mainloop()
 

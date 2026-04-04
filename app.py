@@ -18,7 +18,15 @@ class State(enum.Enum):
 
 
 class TypeTypeApp(ctk.CTk):
-    def __init__(self, sentences, book_path, start_index, translator, audio_manager):
+    def __init__(
+        self,
+        sentences,
+        book_path,
+        start_index,
+        translator,
+        audio_manager,
+        test_mode=False,
+    ):
         super().__init__()
 
         self.sentences = sentences
@@ -27,6 +35,7 @@ class TypeTypeApp(ctk.CTk):
         self.audio = audio_manager
         self.current_index = start_index
         self.app_state = State.LOADING
+        self.test_mode = test_mode
 
         # Typing state
         self.sentence = ""
@@ -49,6 +58,7 @@ class TypeTypeApp(ctk.CTk):
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
         # Start first sentence
+        self.after(100, self._update_wraplength)
         self.after(100, lambda: self._load_sentence(self.current_index))
 
     # ── UI Setup ──────────────────────────────────────────────────
@@ -57,21 +67,21 @@ class TypeTypeApp(ctk.CTk):
         ctk.set_appearance_mode("dark")
         ctk.set_default_color_theme("blue")
 
-        self.title("TypeType - 英语打字练习")
-        self.geometry("1100x550")
+        self.title("TypeType")
         self.resizable(True, True)
 
-        # Center on screen
         self.update_idletasks()
         sw = self.winfo_screenwidth()
         sh = self.winfo_screenheight()
-        x = (sw - 1100) // 2
-        y = (sh - 550) // 2
-        self.geometry(f"1100x550+{x}+{y}")
+        w = 1500
+        h = 400
+        x = 120
+        y = 700
+        self.geometry(f"{w}x{h}+{x}+{y}")
 
         # Main container
         container = ctk.CTkFrame(self, fg_color="transparent")
-        container.pack(expand=True, fill="both", padx=40, pady=30)
+        container.pack(expand=True, fill="both", padx=40, pady=(30, 5))
         container.grid_rowconfigure(0, weight=0)  # translation (fixed height)
         container.grid_rowconfigure(1, weight=0)  # original (fixed height)
         container.grid_rowconfigure(2, weight=0)  # input (fixed height)
@@ -129,15 +139,20 @@ class TypeTypeApp(ctk.CTk):
         self.lbl_progress = ctk.CTkLabel(
             status_frame, text="", font=("Microsoft YaHei", 14), text_color="#666666"
         )
-        self.lbl_progress.pack(side="left")
+        self.lbl_progress.pack(side="right")
 
+        # Hint label: centered at bottom, hidden until sentence audio finishes
         self.lbl_hint = ctk.CTkLabel(
-            status_frame, text="", font=("Microsoft YaHei", 16), text_color="#FFA726"
+            container,
+            text="",
+            font=("Microsoft YaHei", 24),
+            text_color="#4CAF50",
+            anchor="center",
         )
-        self.lbl_hint.pack(side="right")
+        self.lbl_hint.grid(row=3, column=0, sticky="s", pady=(0, 5))
 
         # Completion overlay (hidden by default)
-        self.completion_frame = ctk.CTkFrame(self, fg_color="#1a1a2e")
+        self.completion_frame = ctk.CTkFrame(self, fg_color="transparent")
         self.lbl_complete = ctk.CTkLabel(
             self.completion_frame,
             text="🎉 恭喜完成全书！",
@@ -151,6 +166,8 @@ class TypeTypeApp(ctk.CTk):
             text="重新开始",
             font=("Microsoft YaHei", 18),
             width=200,
+            fg_color="#3c3c3c",
+            hover_color="#505050",
             command=self._restart_book,
         )
         self.btn_restart.pack(pady=10)
@@ -160,6 +177,8 @@ class TypeTypeApp(ctk.CTk):
             text="打开新书",
             font=("Microsoft YaHei", 18),
             width=200,
+            fg_color="#3c3c3c",
+            hover_color="#505050",
             command=self._open_new_book,
         )
         self.btn_new_book.pack(pady=10)
@@ -176,7 +195,9 @@ class TypeTypeApp(ctk.CTk):
             return
 
         self.app_state = State.LOADING
-        self.lbl_original.configure(text="加载中...")
+        self.lbl_original.configure(
+            text="加载中...", text_color="#4A9EFF", anchor="center"
+        )
         self.lbl_translation.configure(text="")
         self.lbl_input.configure(text="")
         self.lbl_hint.configure(text="")
@@ -225,7 +246,7 @@ class TypeTypeApp(ctk.CTk):
         self.app_state = State.TYPING
 
         self.lbl_translation.configure(text=translation)
-        self.lbl_original.configure(text=sentence)
+        self.lbl_original.configure(text=sentence, text_color="#FFFFFF", anchor="w")
         self.lbl_input.configure(text="▏")
         self.lbl_hint.configure(text="")
 
@@ -320,7 +341,13 @@ class TypeTypeApp(ctk.CTk):
 
         expected = self.sentence[self.cursor_pos]
 
-        if ch == expected:
+        # 测试模式：按 't' 视为正确，其他键视为错误
+        if self.test_mode:
+            correct = ch == "t"
+        else:
+            correct = ch == expected
+
+        if correct:
             self.cursor_pos += 1
             self._update_input_display()
 
@@ -336,7 +363,7 @@ class TypeTypeApp(ctk.CTk):
             if self.cursor_pos >= len(self.sentence):
                 self.app_state = State.SENTENCE_COMPLETE
                 self.audio.play_sentence()
-                self.lbl_hint.configure(text="按回车键继续")
+                self._poll_sentence_played()
         else:
             # Wrong character: reset to start of current word
             if self.word_boundaries:
@@ -367,6 +394,15 @@ class TypeTypeApp(ctk.CTk):
     def _clear_flash(self):
         self.configure(fg_color=self._original_fg)
         self._flash_after_id = None
+
+    def _poll_sentence_played(self):
+        """Wait for sentence audio to finish playing once, then show hint."""
+        if self.app_state != State.SENTENCE_COMPLETE:
+            return
+        if self.audio.has_sentence_played_once():
+            self.lbl_hint.configure(text="按回车键继续")
+        else:
+            self.after(200, self._poll_sentence_played)
 
     def _on_window_resize(self, event):
         """Update wraplength of all text labels when window resizes."""
@@ -419,7 +455,7 @@ class TypeTypeApp(ctk.CTk):
 
     def _open_new_book(self):
         from tkinter import filedialog
-        from progress import clear_progress
+        from main import clear_all_cache
 
         path = filedialog.askopenfilename(
             title="选择英文书籍", filetypes=[("Text files", "*.txt")]
@@ -432,7 +468,7 @@ class TypeTypeApp(ctk.CTk):
         sentences = split_sentences(text)
         if not sentences:
             return
-        clear_progress()
+        clear_all_cache()
         self.completion_frame.place_forget()
         self.sentences = sentences
         self.book_path = path
