@@ -109,7 +109,7 @@ def main():
         root.resizable(False, False)
         root.configure(bg="#2b2b2b")
 
-        result = {"value": None}
+        result: dict[str, bool | None] = {"value": None}
 
         tk.Label(
             root,
