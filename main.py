@@ -1,3 +1,5 @@
+"""程序入口模块，负责配置读取、选书流程和主窗口启动。"""
+
 import configparser
 import os
 import sys
@@ -25,6 +27,7 @@ TEST_MODE = False
 
 
 def ensure_config():
+    """确保配置文件存在，并返回已加载的配置对象。"""
     if not os.path.exists(CONFIG_PATH):
         cfg = configparser.ConfigParser()
         cfg["deepl"] = {"api_key_file": r"C:\path\to\deepl_key.txt"}
@@ -37,6 +40,7 @@ def ensure_config():
 
 
 def get_api_key(cfg):
+    """从配置指定的外部文件中读取 DeepL API Key。"""
     key_file = cfg.get("deepl", "api_key_file", fallback="")
     if not key_file or key_file == r"C:\path\to\deepl_key.txt":
         messagebox.showwarning(
@@ -64,7 +68,7 @@ def get_api_key(cfg):
 
 
 def clear_all_cache():
-    """清除所有缓存：进度、翻译缓存、音频缓存"""
+    """清除所有缓存：进度、翻译缓存和音频缓存。"""
     import shutil
 
     clear_progress()
@@ -78,7 +82,7 @@ def clear_all_cache():
 
 
 def choose_book():
-    """Show file dialog to choose a txt file. Returns path or exits."""
+    """弹出文件选择框，返回用户选中的 txt 文件路径。"""
     root = tk.Tk()
     root.withdraw()
     path = filedialog.askopenfilename(
@@ -91,6 +95,7 @@ def choose_book():
 
 
 def main():
+    """初始化运行环境，选择书籍，并启动主界面。"""
     # Ensure nltk data is ready
     ensure_nltk_data()
 
@@ -135,14 +140,17 @@ def main():
         }
 
         def on_continue():
+            """继续使用上次保存的书籍和进度。"""
             result["value"] = True
             root.destroy()
 
         def on_new():
+            """进入选择新书流程。"""
             result["value"] = False
             root.destroy()
 
         def on_cancel():
+            """关闭对话框并终止本次启动流程。"""
             root.destroy()
 
         tk.Button(

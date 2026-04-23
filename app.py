@@ -1,3 +1,5 @@
+"""主界面模块，负责窗口布局、打字判定、预加载和流程切换。"""
+
 import enum
 import re
 import threading
@@ -11,6 +13,8 @@ from translator import DeepLTranslator
 
 
 class State(enum.Enum):
+    """界面当前所处的工作状态。"""
+
     LOADING = "loading"
     TYPING = "typing"
     SENTENCE_COMPLETE = "sentence_complete"
@@ -18,6 +22,8 @@ class State(enum.Enum):
 
 
 class TypeTypeApp(ctk.CTk):
+    """英语打字练习主窗口。"""
+
     def __init__(
         self,
         sentences,
@@ -27,6 +33,7 @@ class TypeTypeApp(ctk.CTk):
         audio_manager,
         test_mode=False,
     ):
+        """初始化窗口、状态和后台预加载器。"""
         super().__init__()
 
         self.sentences = sentences
@@ -64,6 +71,7 @@ class TypeTypeApp(ctk.CTk):
     # ── UI Setup ──────────────────────────────────────────────────
 
     def _setup_ui(self):
+        """创建主窗口中的标签、按钮和整体布局。"""
         ctk.set_appearance_mode("dark")
         ctk.set_default_color_theme("blue")
 
@@ -190,6 +198,7 @@ class TypeTypeApp(ctk.CTk):
     # ── Sentence loading ──────────────────────────────────────────
 
     def _load_sentence(self, index):
+        """加载指定序号的句子，并准备翻译和音频资源。"""
         if index >= len(self.sentences):
             self._show_completion()
             return
@@ -222,6 +231,7 @@ class TypeTypeApp(ctk.CTk):
             return
 
         def _bg():
+            """在后台线程中并行生成翻译和当前句音频。"""
             sentence = self.sentences[index]
             words = sentence.split()
             # Run translation and audio generation in parallel
@@ -238,6 +248,7 @@ class TypeTypeApp(ctk.CTk):
         threading.Thread(target=_bg, daemon=True).start()
 
     def _display_sentence(self, sentence, translation, words):
+        """将当前句子的文本、翻译和输入状态显示到界面上。"""
         self.sentence = sentence
         self.cursor_pos = 0
         self.display_words = words
@@ -263,13 +274,14 @@ class TypeTypeApp(ctk.CTk):
     # ── Prefetch ──────────────────────────────────────────────────
 
     def _start_prefetch(self, index):
-        """Prefetch translation and audio files for the next sentence while user types."""
+        """在用户输入当前句时预加载下一句的翻译和音频文件。"""
         if index >= len(self.sentences):
             return
         if index in self._prefetch_cache:
             return
 
         def _prefetch():
+            """后台准备下一句的翻译结果和音频缓存。"""
             sentence = self.sentences[index]
             words = sentence.split()
             # Run translation and audio file generation in parallel
@@ -293,9 +305,7 @@ class TypeTypeApp(ctk.CTk):
 
     @staticmethod
     def _compute_word_boundaries(sentence):
-        """Compute (start, end) for each word segment.
-        Spaces after a word belong to that word (except the last word).
-        """
+        """计算每个单词片段在整句中的起止范围。"""
         boundaries = []
         i = 0
         n = len(sentence)
@@ -314,9 +324,23 @@ class TypeTypeApp(ctk.CTk):
             boundaries.append((start, i))
         return boundaries
 
+    @staticmethod
+    def _normalize_char(ch):
+        """将常见排版字符归一化，避免智能标点导致误判。"""
+        mapping = {
+            "’": "'",
+            "‘": "'",
+            "“": '"',
+            "”": '"',
+            "–": "-",
+            "—": "-",
+        }
+        return mapping.get(ch, ch)
+
     # ── Keyboard handling ─────────────────────────────────────────
 
     def _on_key_press(self, event):
+        """处理键盘输入，并推进或回退当前打字进度。"""
         # Clear the hidden entry to prevent text buildup
         self.after(1, lambda: self._key_sink.delete(0, "end"))
         if self.app_state == State.LOADING or self.app_state == State.BOOK_COMPLETE:
@@ -335,17 +359,18 @@ class TypeTypeApp(ctk.CTk):
         if not ch or len(ch) != 1:
             return "break"
 
-        # Only accept printable ASCII (space through tilde)
-        if ord(ch) < 32 or ord(ch) > 126:
+        # Ignore control chars, keep printable Unicode for punctuation compatibility
+        if ord(ch) < 32:
             return "break"
 
-        expected = self.sentence[self.cursor_pos]
+        expected = self._normalize_char(self.sentence[self.cursor_pos])
+        typed = self._normalize_char(ch)
 
         # 测试模式：按 't' 视为正确，其他键视为错误
         if self.test_mode:
-            correct = ch == "t"
+            correct = typed == "t"
         else:
-            correct = ch == expected
+            correct = typed == expected
 
         if correct:
             self.cursor_pos += 1
@@ -375,14 +400,14 @@ class TypeTypeApp(ctk.CTk):
         return "break"
 
     def _get_word_index(self, pos):
-        """Return which word segment index `pos` falls into."""
+        """根据字符位置返回所在的单词片段索引。"""
         for i, (start, end) in enumerate(self.word_boundaries):
             if pos < end:
                 return i
         return len(self.word_boundaries) - 1
 
     def _flash_error(self):
-        """Show a quick red flash by changing window background color."""
+        """打错时短暂闪红，提示用户输入错误。"""
         if self._flash_after_id is not None:
             self.after_cancel(self._flash_after_id)
         if self._original_fg is None:
@@ -392,11 +417,12 @@ class TypeTypeApp(ctk.CTk):
         self._flash_after_id = self.after(150, self._clear_flash)
 
     def _clear_flash(self):
+        """恢复窗口原本的背景色。"""
         self.configure(fg_color=self._original_fg)
         self._flash_after_id = None
 
     def _poll_sentence_played(self):
-        """Wait for sentence audio to finish playing once, then show hint."""
+        """轮询整句音频是否至少播放一遍，随后显示回车提示。"""
         if self.app_state != State.SENTENCE_COMPLETE:
             return
         if self.audio.has_sentence_played_once():
@@ -405,14 +431,14 @@ class TypeTypeApp(ctk.CTk):
             self.after(200, self._poll_sentence_played)
 
     def _on_window_resize(self, event):
-        """Update wraplength of all text labels when window resizes."""
+        """窗口尺寸变化后，重新计算文本换行宽度。"""
         if event.widget is not self:
             return
         # Schedule after layout so winfo_width is accurate
         self.after(5, self._update_wraplength)
 
     def _update_wraplength(self):
-        """Set wraplength directly on the inner tkinter label, bypassing CTk DPI scaling."""
+        """直接设置底层 tkinter Label 的换行宽度。"""
         w = self.lbl_original.winfo_width() - 4
         if w > 100:
             # Access the internal tkinter Label to avoid CTk's DPI scaling
@@ -421,6 +447,7 @@ class TypeTypeApp(ctk.CTk):
             self.lbl_input._label.configure(wraplength=w)
 
     def _update_input_display(self):
+        """刷新输入行，显示已输入部分与光标位置。"""
         typed = self.sentence[: self.cursor_pos]
         remaining_len = len(self.sentence) - self.cursor_pos
         if remaining_len > 0:
@@ -430,12 +457,14 @@ class TypeTypeApp(ctk.CTk):
             self.lbl_input.configure(text=typed)
 
     def _update_progress(self, index):
+        """更新右下角的句子进度显示。"""
         total = len(self.sentences)
         self.lbl_progress.configure(text=f"第 {index + 1} / {total} 句")
 
     # ── Completion ────────────────────────────────────────────────
 
     def _show_completion(self):
+        """展示整本书完成后的收尾界面。"""
         self.app_state = State.BOOK_COMPLETE
         self.audio.stop()
         self.lbl_translation.configure(text="")
@@ -448,12 +477,14 @@ class TypeTypeApp(ctk.CTk):
         )
 
     def _restart_book(self):
+        """从头重新开始当前这本书。"""
         self.completion_frame.place_forget()
         self.current_index = 0
         save_progress(self.book_path, 0)
         self._load_sentence(0)
 
     def _open_new_book(self):
+        """选择一本新书，并清空旧书相关缓存后重新载入。"""
         from tkinter import filedialog
         from main import clear_all_cache
 
@@ -478,6 +509,7 @@ class TypeTypeApp(ctk.CTk):
     # ── Cleanup ───────────────────────────────────────────────────
 
     def _on_close(self):
+        """关闭窗口前保存必要进度并释放音频资源。"""
         if self.app_state == State.TYPING:
             save_progress(self.book_path, self.current_index)
         self.audio.cleanup()

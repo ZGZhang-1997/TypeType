@@ -1,3 +1,5 @@
+"""文本处理模块，负责加载书籍内容并拆分为可练习的句子。"""
+
 import os
 import re
 import sys
@@ -7,6 +9,7 @@ from nltk.tokenize import sent_tokenize
 
 
 def ensure_nltk_data():
+    """确保分句所需的 nltk 数据已可用。"""
     # PyInstaller 打包时，nltk 数据在临时解压目录中
     if getattr(sys, "frozen", False):
         nltk.data.path.insert(0, os.path.join(sys._MEIPASS, "nltk_data"))
@@ -17,11 +20,13 @@ def ensure_nltk_data():
 
 
 def load_book(filepath):
+    """读取整本 txt 书籍内容并返回字符串。"""
     with open(filepath, "r", encoding="utf-8") as f:
         return f.read()
 
 
 def split_sentences(text):
+    """按标题、短行和正文规则将文本拆分成句子列表。"""
     ensure_nltk_data()
     results = []
 
