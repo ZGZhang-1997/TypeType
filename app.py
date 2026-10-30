@@ -1,12 +1,32 @@
 """主界面模块，负责窗口布局、打字判定、预加载和流程切换。"""
 
 import enum
+import os
 import threading
+import tkinter as tk
 from concurrent.futures import ThreadPoolExecutor
+from tkinter import font as tkfont
 
 import customtkinter as ctk
 
 from progress import save_progress
+
+
+def apply_dark_titlebar(window):
+    """让 Windows 标题栏跟随深色主题，失败时静默忽略。"""
+    try:
+        import ctypes
+
+        hwnd = ctypes.windll.user32.GetParent(window.winfo_id())
+        enabled = ctypes.c_int(1)
+        for attribute in (20, 19):  # DWMWA_USE_IMMERSIVE_DARK_MODE 及其旧编号
+            result = ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                hwnd, attribute, ctypes.byref(enabled), ctypes.sizeof(enabled)
+            )
+            if result == 0:
+                break
+    except Exception:
+        pass
 
 
 class State(enum.Enum):
@@ -21,6 +41,20 @@ class State(enum.Enum):
 class TypeTypeApp(ctk.CTk):
     """英语打字练习主窗口。"""
 
+    # ── 视觉主题（Tokyo Night 配色）──────────────────────────────
+    BG = "#16161e"  # 窗口底色
+    SURFACE = "#1a1b26"  # 卡片底色
+    BORDER = "#262b40"  # 分隔线与描边
+    FG = "#c0caf5"  # 原文
+    TRANSLATION = "#6b7394"  # 译文
+    MUTED = "#565f89"  # 次要信息
+    ACCENT = "#7aa2f7"  # 当前词 / 进度
+    SUCCESS = "#9ece6a"  # 已输入
+    GHOST = "#2f3550"  # 尚未输入的文字
+    FLASH_BG = "#2a1a24"  # 打错时的背景闪色
+    FONT_UI = "Microsoft YaHei UI"
+    FONT_MONO = "Cascadia Mono"
+
     def __init__(
         self,
         sentences,
@@ -32,6 +66,13 @@ class TypeTypeApp(ctk.CTk):
     ):
         """初始化窗口、状态和后台预加载器。"""
         super().__init__()
+
+        # 字体回退：优先 Cascadia Mono，缺失时退回 Consolas
+        available = set(tkfont.families())
+        for name in ("Cascadia Mono", "Consolas", "Courier New"):
+            if name in available:
+                self.FONT_MONO = name
+                break
 
         self.sentences = sentences
         self.book_path = book_path
@@ -48,6 +89,7 @@ class TypeTypeApp(ctk.CTk):
         self.word_boundaries = []  # [(start, end), ...]
         self.current_word_idx = 0
         self.display_words = []  # words split by space (for audio key)
+        self._cmp_to_disp = []  # compare_sentence 下标 -> 原文显示下标
 
         # Prefetch state: cache for next sentence
         self._prefetch_cache = {}  # index -> {sentence, translation, words}
@@ -55,14 +97,16 @@ class TypeTypeApp(ctk.CTk):
 
         self._setup_ui()
         # Use a hidden Entry to reliably capture keyboard input
-        self._key_sink = ctk.CTkEntry(self, width=0, height=0, border_width=0)
-        self._key_sink.place(x=-10, y=-10)
+        self._key_sink = ctk.CTkEntry(
+            self, width=1, height=1, border_width=0, fg_color=self.BG, text_color=self.BG
+        )
+        self._key_sink.place(x=-60, y=-60)
         self._key_sink.bind("<Key>", self._on_key_press)
         self._key_sink.focus_set()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
         # Start first sentence
-        self.after(100, self._update_wraplength)
+        self.after(100, self._refit_texts)
         self.after(100, lambda: self._load_sentence(self.current_index))
 
     # ── UI Setup ──────────────────────────────────────────────────
@@ -73,121 +117,238 @@ class TypeTypeApp(ctk.CTk):
         ctk.set_default_color_theme("blue")
 
         self.title("TypeType")
+        self.configure(fg_color=self.BG)
         self.resizable(True, True)
 
         self.update_idletasks()
-        w = 1500
-        h = 400
-        x = 120
-        y = 700
-        self.geometry(f"{w}x{h}+{x}+{y}")
+        screen_w = self.winfo_screenwidth()
+        screen_h = self.winfo_screenheight()
+        width, height = 1180, 680
+        x = max(0, (screen_w - width) // 2)
+        y = max(0, (screen_h - height) // 2 - 30)
+        self.geometry(f"{width}x{height}+{x}+{y}")
+        self.minsize(900, 560)
 
-        # Main container
-        container = ctk.CTkFrame(self, fg_color="transparent")
-        container.pack(expand=True, fill="both", padx=40, pady=(30, 5))
-        container.grid_rowconfigure(0, weight=0)  # translation (fixed height)
-        container.grid_rowconfigure(1, weight=0)  # original (fixed height)
-        container.grid_rowconfigure(2, weight=0)  # input (fixed height)
-        container.grid_rowconfigure(3, weight=1)  # spacer (pushes everything up)
-        container.grid_rowconfigure(4, weight=0)  # status
-        container.grid_columnconfigure(0, weight=1)
+        root = ctk.CTkFrame(self, fg_color="transparent")
+        root.pack(fill="both", expand=True, padx=56, pady=(34, 30))
+        root.grid_columnconfigure(0, weight=1)
+        root.grid_rowconfigure(2, weight=1)
 
-        # Translation label (top)
-        self.lbl_translation = ctk.CTkLabel(
-            container,
-            text="",
-            font=("Microsoft YaHei", 24),
-            text_color="#555555",
-            justify="left",
-            anchor="w",
-            padx=0,
-            pady=0,
-        )
-        self.lbl_translation.grid(row=0, column=0, sticky="sew", pady=(0, 8))
+        # ── 顶栏：品牌与进度计数 ──
+        header = ctk.CTkFrame(root, fg_color="transparent")
+        header.grid(row=0, column=0, sticky="ew")
+        header.grid_columnconfigure(1, weight=1)
 
-        # Original sentence (middle)
-        self.lbl_original = ctk.CTkLabel(
-            container,
-            text="",
-            font=("Consolas", 26),
-            text_color="#FFFFFF",
-            justify="left",
-            anchor="w",
-            padx=0,
-            pady=0,
-        )
-        self.lbl_original.grid(row=1, column=0, sticky="sew", pady=(0, 0))
-
-        # User input (bottom)
-        self.lbl_input = ctk.CTkLabel(
-            container,
-            text="",
-            font=("Consolas", 26),
-            text_color="#4CAF50",
-            justify="left",
-            anchor="w",
-            padx=0,
-            pady=0,
-        )
-        self.lbl_input.grid(row=2, column=0, sticky="new", pady=(15, 0))
-
-        # Dynamic wraplength: bind to window resize
-        self.bind("<Configure>", self._on_window_resize)
-
-        # Status bar
-        status_frame = ctk.CTkFrame(container, fg_color="transparent")
-        status_frame.grid(row=4, column=0, sticky="ew", pady=(20, 0))
+        ctk.CTkLabel(
+            header,
+            text="TypeType",
+            font=(self.FONT_UI, 15, "bold"),
+            text_color=self.ACCENT,
+        ).grid(row=0, column=0, sticky="w")
 
         self.lbl_progress = ctk.CTkLabel(
-            status_frame, text="", font=("Microsoft YaHei", 14), text_color="#666666"
+            header, text="", font=(self.FONT_UI, 12), text_color=self.MUTED
         )
-        self.lbl_progress.pack(side="right")
+        self.lbl_progress.grid(row=0, column=1, sticky="e")
 
-        # Hint label: centered at bottom, hidden until sentence audio finishes
+        # ── 细进度条 ──
+        self.progress_bar = ctk.CTkProgressBar(
+            root,
+            height=2,
+            corner_radius=1,
+            border_width=0,
+            fg_color=self.BORDER,
+            progress_color=self.ACCENT,
+        )
+        self.progress_bar.set(0)
+        self.progress_bar.grid(row=1, column=0, sticky="ew", pady=(14, 0))
+
+        # ── 内容卡片 ──
+        card = ctk.CTkFrame(
+            root,
+            fg_color=self.SURFACE,
+            corner_radius=16,
+            border_width=1,
+            border_color=self.BORDER,
+        )
+        card.grid(row=2, column=0, sticky="ew", pady=(26, 0))
+        card.grid_columnconfigure(0, weight=1)
+
+        inner = ctk.CTkFrame(card, fg_color="transparent")
+        inner.grid(row=0, column=0, sticky="ew", padx=52, pady=(46, 34))
+        inner.grid_columnconfigure(0, weight=1)
+
+        # 译文（小字，弱化）
+        self.txt_translation = self._make_text(
+            inner, 2, 18, self.TRANSLATION, self.FONT_UI
+        )
+        self.txt_translation.grid(row=0, column=0, sticky="ew")
+        self.txt_translation.tag_configure("muted", foreground=self.MUTED)
+
+        # 原文（主视觉，当前单词高亮）
+        self.txt_original = self._make_text(inner, 3, 29, self.FG, self.FONT_MONO)
+        self.txt_original.grid(row=1, column=0, sticky="ew", pady=(20, 0))
+        self.txt_original.tag_configure("current", foreground=self.ACCENT)
+        self.txt_original.tag_configure("muted", foreground=self.MUTED)
+
+        # 输入行（已输入 / 光标 / 未输入三态）
+        self.txt_input = self._make_text(inner, 3, 29, self.SUCCESS, self.FONT_MONO)
+        self.txt_input.grid(row=2, column=0, sticky="ew", pady=(28, 0))
+        self.txt_input.tag_configure("typed", foreground=self.SUCCESS)
+        self.txt_input.tag_configure("caret", foreground=self.ACCENT)
+        self.txt_input.tag_configure("ghost", foreground=self.GHOST)
+        self.txt_input.tag_configure("muted", foreground=self.MUTED)
+
+        # 窗口尺寸变化后重算行高
+        self.bind("<Configure>", self._on_resize)
+
+        # ── 卡片底部状态栏：书名 + 提示 ──
+        ctk.CTkFrame(card, height=1, fg_color="#2c3350").grid(
+            row=1, column=0, sticky="ew", padx=52
+        )
+
+        footer = ctk.CTkFrame(card, fg_color="transparent")
+        footer.grid(row=2, column=0, sticky="ew", padx=52, pady=(14, 20))
+        footer.grid_columnconfigure(1, weight=1)
+
+        book_name = os.path.basename(self.book_path)
+        if len(book_name) > 44:
+            book_name = book_name[:22] + "…" + book_name[-18:]
+
+        self.lbl_book = ctk.CTkLabel(
+            footer, text=book_name, font=(self.FONT_UI, 11), text_color=self.MUTED
+        )
+        self.lbl_book.grid(row=0, column=0, sticky="w")
+
         self.lbl_hint = ctk.CTkLabel(
-            container,
-            text="",
-            font=("Microsoft YaHei", 24),
-            text_color="#4CAF50",
-            anchor="center",
+            footer, text="", font=(self.FONT_UI, 12), text_color=self.SUCCESS
         )
-        self.lbl_hint.grid(row=3, column=0, sticky="s", pady=(0, 5))
+        self.lbl_hint.grid(row=0, column=1, sticky="e")
 
-        # Completion overlay (hidden by default)
-        self.completion_frame = ctk.CTkFrame(self, fg_color="transparent")
-        self.lbl_complete = ctk.CTkLabel(
-            self.completion_frame,
-            text="🎉 恭喜完成全书！",
-            font=("Microsoft YaHei", 32),
-            text_color="#4CAF50",
+        # ── 完成页（整窗覆盖，默认隐藏）──
+        self.completion_frame = ctk.CTkFrame(
+            self, fg_color=self.BG, corner_radius=0
         )
-        self.lbl_complete.pack(pady=(60, 30))
+        panel = ctk.CTkFrame(self.completion_frame, fg_color="transparent")
+        panel.place(relx=0.5, rely=0.5, anchor="center")
+
+        self.lbl_complete = ctk.CTkLabel(
+            panel,
+            text="🎉",
+            font=(self.FONT_UI, 44),
+            text_color=self.ACCENT,
+        )
+        self.lbl_complete.pack(pady=(0, 10))
+
+        ctk.CTkLabel(
+            panel,
+            text="全书完成",
+            font=(self.FONT_UI, 26, "bold"),
+            text_color=self.FG,
+        ).pack(pady=(0, 8))
+
+        ctk.CTkLabel(
+            panel,
+            text="这本书的每一句都打完了",
+            font=(self.FONT_UI, 12),
+            text_color=self.MUTED,
+        ).pack(pady=(0, 32))
+
+        buttons = ctk.CTkFrame(panel, fg_color="transparent")
+        buttons.pack()
 
         self.btn_restart = ctk.CTkButton(
-            self.completion_frame,
+            buttons,
             text="重新开始",
-            font=("Microsoft YaHei", 18),
-            width=200,
-            fg_color="#3c3c3c",
-            hover_color="#505050",
+            width=126,
+            height=38,
+            corner_radius=10,
+            font=(self.FONT_UI, 13),
+            fg_color=self.ACCENT,
+            hover_color="#6188d4",
+            text_color=self.BG,
             command=self._restart_book,
         )
-        self.btn_restart.pack(pady=10)
+        self.btn_restart.pack(side="left", padx=(0, 10))
 
         self.btn_new_book = ctk.CTkButton(
-            self.completion_frame,
+            buttons,
             text="打开新书",
-            font=("Microsoft YaHei", 18),
-            width=200,
-            fg_color="#3c3c3c",
-            hover_color="#505050",
+            width=126,
+            height=38,
+            corner_radius=10,
+            font=(self.FONT_UI, 13),
+            fg_color="transparent",
+            hover_color=self.BORDER,
+            border_width=1,
+            border_color=self.BORDER,
+            text_color=self.FG,
             command=self._open_new_book,
         )
-        self.btn_new_book.pack(pady=10)
+        self.btn_new_book.pack(side="left")
 
-        # Error flash state
         self._flash_after_id = None
-        self._original_fg = None
+
+        self.update_idletasks()
+        apply_dark_titlebar(self)
+
+    # ── 文本控件辅助 ──────────────────────────────────────────────
+
+    def _make_text(self, parent, rows, size, color, family):
+        """创建只读、无边框、支持标签着色的文本控件。"""
+        widget = tk.Text(
+            parent,
+            width=1,  # 宽度交给 grid 的 sticky="ew"，避免按默认 80 字符撑开布局
+            height=rows,
+            font=(family, size),
+            fg=color,
+            bg=self.SURFACE,
+            bd=0,
+            relief="flat",
+            highlightthickness=0,
+            wrap="word",
+            cursor="arrow",
+            takefocus=0,
+            padx=0,
+            pady=0,
+            spacing1=0,
+            spacing2=8,
+            spacing3=0,
+            insertwidth=0,
+            selectbackground=self.SURFACE,
+            selectforeground=color,
+        )
+        widget.configure(state="disabled")
+        return widget
+
+    def _set_text(self, widget, parts, fit=True):
+        """用 (文本, 标签) 片段重写控件内容，可选择是否重算行高。"""
+        widget.configure(state="normal")
+        widget.delete("1.0", "end")
+        for content, tag in parts:
+            widget.insert("end", content, tag if tag else ())
+        widget.configure(state="disabled")
+        if fit:
+            self._fit_height(widget)
+
+    def _fit_height(self, widget):
+        """按实际换行数收紧行高，避免多余空白。"""
+        widget.update_idletasks()
+        counted = widget.count("1.0", "end-1c", "displaylines")
+        rows = max(1, int(counted[0]) if counted else 1)
+        if int(widget.cget("height")) != rows:
+            widget.configure(height=rows)
+
+    def _refit_texts(self):
+        """窗口尺寸变化后重新计算三块文本的行高。"""
+        for widget in (self.txt_translation, self.txt_original, self.txt_input):
+            self._fit_height(widget)
+
+    def _on_resize(self, event):
+        """只响应主窗口自身的尺寸变化。"""
+        if event.widget is not self:
+            return
+        self.after_idle(self._refit_texts)
 
     # ── Sentence loading ──────────────────────────────────────────
 
@@ -198,11 +359,9 @@ class TypeTypeApp(ctk.CTk):
             return
 
         self.app_state = State.LOADING
-        self.lbl_original.configure(
-            text="加载中...", text_color="#4A9EFF", anchor="center"
-        )
-        self.lbl_translation.configure(text="")
-        self.lbl_input.configure(text="")
+        self._set_text(self.txt_translation, [("", None)])
+        self._set_text(self.txt_original, [("正在准备…", "muted")])
+        self._set_text(self.txt_input, [("", None)])
         self.lbl_hint.configure(text="")
         self._update_progress(index)
 
@@ -254,6 +413,15 @@ class TypeTypeApp(ctk.CTk):
         self.sentence = sentence
         # 用于比对版本：将 … 展开为 ...，让用户打三个句号即可匹配
         self.compare_sentence = sentence.replace("…", "...")
+        # compare_sentence 下标 → 原文显示下标（… 会展开成三个字符）
+        mapping = []
+        display_index = 0
+        for ch in sentence:
+            repeat = 3 if ch == "…" else 1
+            mapping.extend([display_index] * repeat)
+            display_index += 1
+        mapping.append(display_index)
+        self._cmp_to_disp = mapping
         self.cursor_pos = 0
         self.display_words = (
             self.compare_sentence.split()
@@ -262,9 +430,11 @@ class TypeTypeApp(ctk.CTk):
         self.current_word_idx = 0
         self.app_state = State.TYPING
 
-        self.lbl_translation.configure(text=translation)
-        self.lbl_original.configure(text=sentence, text_color="#FFFFFF", anchor="w")
-        self.lbl_input.configure(text="▏")
+        self._set_text(self.txt_translation, [(translation, None)])
+        self._set_text(self.txt_original, [(sentence, None)])
+        self._update_input_display()
+        self._fit_height(self.txt_input)
+        self._highlight_word()
         self.lbl_hint.configure(text="")
 
         # Ensure keyboard focus on hidden input sink
@@ -391,6 +561,7 @@ class TypeTypeApp(ctk.CTk):
                 self.display_words
             ):
                 self.current_word_idx = new_word_idx
+                self._highlight_word()
                 self.audio.transition_to_word(self.display_words[new_word_idx])
 
             # Check if sentence is complete (使用 compare_sentence 的长度判断)
@@ -416,18 +587,15 @@ class TypeTypeApp(ctk.CTk):
         return len(self.word_boundaries) - 1
 
     def _flash_error(self):
-        """打错时短暂闪红，提示用户输入错误。"""
+        """打错时窗口背景短暂染上暗红。"""
         if self._flash_after_id is not None:
             self.after_cancel(self._flash_after_id)
-        if self._original_fg is None:
-            # Save the actual background color on first flash
-            self._original_fg = self.cget("fg_color")
-        self.configure(fg_color="#3a0000")
-        self._flash_after_id = self.after(150, self._clear_flash)
+        self.configure(fg_color=self.FLASH_BG)
+        self._flash_after_id = self.after(140, self._clear_flash)
 
     def _clear_flash(self):
         """恢复窗口原本的背景色。"""
-        self.configure(fg_color=self._original_fg)
+        self.configure(fg_color=self.BG)
         self._flash_after_id = None
 
     def _poll_sentence_played(self):
@@ -439,36 +607,43 @@ class TypeTypeApp(ctk.CTk):
         else:
             self.after(200, self._poll_sentence_played)
 
-    def _on_window_resize(self, event):
-        """窗口尺寸变化后，重新计算文本换行宽度。"""
-        if event.widget is not self:
+    def _highlight_word(self):
+        """在原文行高亮当前正在输入的单词。"""
+        self.txt_original.tag_remove("current", "1.0", "end")
+        if not self.word_boundaries or not self._cmp_to_disp:
             return
-        # Schedule after layout so winfo_width is accurate
-        self.after(5, self._update_wraplength)
-
-    def _update_wraplength(self):
-        """直接设置底层 tkinter Label 的换行宽度。"""
-        w = self.lbl_original.winfo_width() - 4
-        if w > 100:
-            # Access the internal tkinter Label to avoid CTk's DPI scaling
-            self.lbl_translation._label.configure(wraplength=w)
-            self.lbl_original._label.configure(wraplength=w)
-            self.lbl_input._label.configure(wraplength=w)
+        start, end = self.word_boundaries[self.current_word_idx]
+        # 尾部空格不参与高亮，视觉上更贴近单词本身
+        while end > start and self.compare_sentence[end - 1] == " ":
+            end -= 1
+        if end <= start:
+            return
+        begin_display = self._cmp_to_disp[start]
+        end_display = self._cmp_to_disp[end]
+        self.txt_original.tag_add(
+            "current",
+            f"1.0 + {begin_display} chars",
+            f"1.0 + {end_display} chars",
+        )
 
     def _update_input_display(self):
-        """刷新输入行，显示已输入部分与光标位置。"""
+        """刷新输入行：已输入、光标、未输入三种样式。"""
         typed = self.compare_sentence[: self.cursor_pos]
-        remaining_len = len(self.compare_sentence) - self.cursor_pos
-        if remaining_len > 0:
-            # Pad with spaces to keep same width as compare sentence
-            self.lbl_input.configure(text=typed + "\u258f" + " " * (remaining_len - 1))
-        else:
-            self.lbl_input.configure(text=typed)
+        rest = self.compare_sentence[self.cursor_pos :]
+        parts = []
+        if typed:
+            parts.append((typed, "typed"))
+        if rest:
+            parts.append(("▏", "caret"))
+            parts.append((rest, "ghost"))
+        # 打字过程中总长度不变，无需重算行高
+        self._set_text(self.txt_input, parts, fit=False)
 
     def _update_progress(self, index):
-        """更新右下角的句子进度显示。"""
+        """更新顶栏的句子计数与进度条。"""
         total = len(self.sentences)
-        self.lbl_progress.configure(text=f"第 {index + 1} / {total} 句")
+        self.lbl_progress.configure(text=f"{index + 1} / {total}")
+        self.progress_bar.set((index + 1) / total if total else 0)
 
     # ── Completion ────────────────────────────────────────────────
 
@@ -476,14 +651,11 @@ class TypeTypeApp(ctk.CTk):
         """展示整本书完成后的收尾界面。"""
         self.app_state = State.BOOK_COMPLETE
         self.audio.stop()
-        self.lbl_translation.configure(text="")
-        self.lbl_original.configure(text="")
-        self.lbl_input.configure(text="")
+        self._set_text(self.txt_translation, [("", None)])
+        self._set_text(self.txt_original, [("", None)])
+        self._set_text(self.txt_input, [("", None)])
         self.lbl_hint.configure(text="")
-        self.lbl_progress.configure(text="")
-        self.completion_frame.place(
-            relx=0.5, rely=0.5, anchor="center", relwidth=0.6, relheight=0.6
-        )
+        self.completion_frame.place(relx=0, rely=0, relwidth=1, relheight=1)
 
     def _restart_book(self):
         """从头重新开始当前这本书。"""

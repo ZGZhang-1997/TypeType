@@ -12,7 +12,9 @@ if getattr(sys, "frozen", False):
 else:
     APP_DIR = os.path.dirname(os.path.abspath(__file__))
 
-from app import TypeTypeApp
+import customtkinter as ctk
+
+from app import TypeTypeApp, apply_dark_titlebar
 from audio_manager import AudioManager
 from progress import get_saved_book_path, load_progress, clear_progress
 from text_processor import load_book, split_sentences, ensure_nltk_data
@@ -20,6 +22,9 @@ from translator import DeepLTranslator
 
 
 CONFIG_PATH = os.path.join(APP_DIR, "config.ini")
+
+# 复用主窗口的配色与字体，保证启动弹窗风格一致
+Theme = TypeTypeApp
 
 # 测试模式开关：默认：False
 # 设为 True 时，按 't' 视为输入正确，按其他键视为输入错误
@@ -94,6 +99,91 @@ def choose_book():
     return path
 
 
+def ask_resume(saved_book):
+    """询问用户：继续上次的书、重新选书，还是退出。"""
+    root = ctk.CTk()
+    root.title("TypeType")
+    root.resizable(False, False)
+    root.configure(fg_color=Theme.BG)
+
+    win_w, win_h = 460, 226
+    screen_w = root.winfo_screenwidth()
+    screen_h = root.winfo_screenheight()
+    root.geometry(f"{win_w}x{win_h}+{(screen_w - win_w) // 2}+{(screen_h - win_h) // 2}")
+
+    ctk.CTkLabel(
+        root,
+        text="继续上次的进度？",
+        font=(Theme.FONT_UI, 18, "bold"),
+        text_color=Theme.FG,
+    ).pack(pady=(36, 6))
+
+    ctk.CTkLabel(
+        root,
+        text=os.path.basename(saved_book),
+        font=(Theme.FONT_UI, 12),
+        text_color=Theme.MUTED,
+    ).pack()
+
+    result = {"value": None}
+
+    def choose(value):
+        result["value"] = value
+        root.destroy()
+
+    row = ctk.CTkFrame(root, fg_color="transparent")
+    row.pack(pady=(28, 0))
+
+    ctk.CTkButton(
+        row,
+        text="继续",
+        width=104,
+        height=36,
+        corner_radius=10,
+        font=(Theme.FONT_UI, 13),
+        fg_color=Theme.ACCENT,
+        hover_color="#6188d4",
+        text_color=Theme.BG,
+        command=lambda: choose(True),
+    ).pack(side="left", padx=5)
+
+    ctk.CTkButton(
+        row,
+        text="选择新书",
+        width=104,
+        height=36,
+        corner_radius=10,
+        font=(Theme.FONT_UI, 13),
+        fg_color="transparent",
+        hover_color=Theme.BORDER,
+        border_width=1,
+        border_color=Theme.BORDER,
+        text_color=Theme.FG,
+        command=lambda: choose(False),
+    ).pack(side="left", padx=5)
+
+    ctk.CTkButton(
+        row,
+        text="退出",
+        width=80,
+        height=36,
+        corner_radius=10,
+        font=(Theme.FONT_UI, 13),
+        fg_color="transparent",
+        hover_color=Theme.BORDER,
+        border_width=1,
+        border_color=Theme.BORDER,
+        text_color=Theme.MUTED,
+        command=lambda: choose(None),
+    ).pack(side="left", padx=5)
+
+    root.protocol("WM_DELETE_WINDOW", lambda: choose(None))
+    # 等窗口真正映射后再设置标题栏颜色，否则 DWM 会忽略
+    root.after(80, lambda: apply_dark_titlebar(root))
+    root.mainloop()
+    return result["value"]
+
+
 def main():
     """初始化运行环境，选择书籍，并启动主界面。"""
     # Ensure nltk data is ready
@@ -108,66 +198,7 @@ def main():
     saved_book = get_saved_book_path()
 
     if saved_book:
-        # Ask user: continue or new book?
-        root = tk.Tk()
-        root.title("是否继续上次进度")
-        root.resizable(False, False)
-        root.configure(bg="#2b2b2b")
-
-        result: dict[str, bool | None] = {"value": None}
-
-        tk.Label(
-            root,
-            text=f"检测到上次打字存档：\n{os.path.basename(saved_book)}",
-            justify="left",
-            padx=20,
-            pady=15,
-            bg="#2b2b2b",
-            fg="#ffffff",
-            font=("Microsoft YaHei", 11),
-        ).pack()
-
-        btn_frame = tk.Frame(root, bg="#2b2b2b")
-        btn_frame.pack(pady=(0, 15))
-
-        btn_style = {
-            "bg": "#3c3c3c",
-            "fg": "#ffffff",
-            "activebackground": "#505050",
-            "activeforeground": "#ffffff",
-            "relief": "flat",
-            "font": ("Microsoft YaHei", 10),
-        }
-
-        def on_continue():
-            """继续使用上次保存的书籍和进度。"""
-            result["value"] = True
-            root.destroy()
-
-        def on_new():
-            """进入选择新书流程。"""
-            result["value"] = False
-            root.destroy()
-
-        def on_cancel():
-            """关闭对话框并终止本次启动流程。"""
-            root.destroy()
-
-        tk.Button(
-            btn_frame, text="继续上次选择", width=14, command=on_continue, **btn_style
-        ).pack(side="left", padx=5)
-        tk.Button(
-            btn_frame, text="选择新书", width=14, command=on_new, **btn_style
-        ).pack(side="left", padx=5)
-        tk.Button(btn_frame, text="退出", width=8, command=on_cancel, **btn_style).pack(
-            side="left", padx=5
-        )
-
-        root.protocol("WM_DELETE_WINDOW", on_cancel)
-        root.eval("tk::PlaceWindow . center")
-        root.mainloop()
-
-        answer = result["value"]
+        answer = ask_resume(saved_book)
 
         if answer is None:
             sys.exit(0)
