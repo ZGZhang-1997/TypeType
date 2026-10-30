@@ -4,6 +4,7 @@ import enum
 import os
 import threading
 import tkinter as tk
+import unicodedata
 from concurrent.futures import ThreadPoolExecutor
 from tkinter import font as tkfont
 
@@ -298,6 +299,7 @@ class TypeTypeApp(ctk.CTk):
 
         self.update_idletasks()
         apply_dark_titlebar(self)
+        self._disable_ime()
 
     # ── 文本控件辅助 ──────────────────────────────────────────────
 
@@ -525,8 +527,30 @@ class TypeTypeApp(ctk.CTk):
         return boundaries
 
     @staticmethod
+    def _char_from_keysym(keysym):
+        """event.char 为空时，用 keysym 推断要输入的字符。"""
+        if len(keysym) == 1 and keysym.isprintable():
+            return keysym
+        if keysym.startswith("KP_") and keysym[3:].isdigit():
+            return keysym[3:]
+        return ""
+
+    def _disable_ime(self):
+        """关闭本窗口的输入法，避免中文 IME 吞掉按键。"""
+        try:
+            import ctypes
+
+            hwnd = ctypes.windll.user32.GetParent(self.winfo_id())
+            ctypes.windll.imm32.ImmAssociateContext(hwnd, None)
+        except Exception:
+            pass
+
+    @staticmethod
     def _normalize_char(ch):
-        """将常见排版字符归一化，避免智能标点导致误判。"""
+        """归一化字符：全角转半角，智能标点转 ASCII。"""
+        # NFKC 把 "１"→"1"、"ａ"→"a"、"！"→"!" 等全角/兼容字符折叠为半角，
+        # 避免输入法处于全角模式时"明明打对了却判错"。
+        ch = unicodedata.normalize("NFKC", ch)
         mapping = {
             "’": "'",
             "‘": "'",
@@ -556,6 +580,9 @@ class TypeTypeApp(ctk.CTk):
 
         # TYPING state
         ch = event.char
+        if not ch:
+            # 输入法拦截或小键盘按键可能不带 char，退回用 keysym 推断
+            ch = self._char_from_keysym(event.keysym)
         if not ch or len(ch) != 1:
             return "break"
 
