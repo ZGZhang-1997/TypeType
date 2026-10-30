@@ -90,6 +90,7 @@ class TypeTypeApp(ctk.CTk):
         self.current_word_idx = 0
         self.display_words = []  # words split by space (for audio key)
         self._cmp_to_disp = []  # compare_sentence 下标 -> 原文显示下标
+        self._skip_offset = 0  # 句首无需输入的字符数（如开引号）
 
         # Prefetch state: cache for next sentence
         self._prefetch_cache = {}  # index -> {sentence, translation, words}
@@ -195,7 +196,8 @@ class TypeTypeApp(ctk.CTk):
         self.txt_input = self._make_text(inner, 3, 29, self.SUCCESS, self.FONT_MONO)
         self.txt_input.grid(row=2, column=0, sticky="ew", pady=(28, 0))
         self.txt_input.tag_configure("typed", foreground=self.SUCCESS)
-        self.txt_input.tag_configure("caret", foreground=self.ACCENT)
+        # 光标用背景色块覆盖下一个待输入字符，避免插入额外字符导致串位
+        self.txt_input.tag_configure("caret", background=self.ACCENT, foreground=self.BG)
         self.txt_input.tag_configure("ghost", foreground=self.GHOST)
         self.txt_input.tag_configure("muted", foreground=self.MUTED)
 
@@ -422,7 +424,9 @@ class TypeTypeApp(ctk.CTk):
             display_index += 1
         mapping.append(display_index)
         self._cmp_to_disp = mapping
-        self.cursor_pos = 0
+        # 开引号只是排版包裹，不作为输入内容：自动跳过，从第一个字母开始
+        self._skip_offset = 1 if self.compare_sentence[:1] in ("“", '"') else 0
+        self.cursor_pos = self._skip_offset
         self.display_words = (
             self.compare_sentence.split()
         )  # 展开后的单词（与词边界一致）
@@ -573,7 +577,7 @@ class TypeTypeApp(ctk.CTk):
             # Wrong character: reset to start of current word
             if self.word_boundaries:
                 start, end = self.word_boundaries[self.current_word_idx]
-                self.cursor_pos = start
+                self.cursor_pos = max(start, self._skip_offset)
                 self._update_input_display()
             self._flash_error()
 
@@ -627,15 +631,20 @@ class TypeTypeApp(ctk.CTk):
         )
 
     def _update_input_display(self):
-        """刷新输入行：已输入、光标、未输入三种样式。"""
-        typed = self.compare_sentence[: self.cursor_pos]
+        """刷新输入行：已输入、光标所在的待输入字符、其余未输入字符。"""
+        skip = self._skip_offset
+        typed = self.compare_sentence[skip : self.cursor_pos]
         rest = self.compare_sentence[self.cursor_pos :]
         parts = []
+        if skip:
+            parts.append((self.compare_sentence[:skip], "ghost"))
         if typed:
             parts.append((typed, "typed"))
         if rest:
-            parts.append(("▏", "caret"))
-            parts.append((rest, "ghost"))
+            # 光标覆盖当前待输入的字符，不额外占用位置，保证与原文逐字对齐
+            parts.append((rest[0], "caret"))
+            if len(rest) > 1:
+                parts.append((rest[1:], "ghost"))
         # 打字过程中总长度不变，无需重算行高
         self._set_text(self.txt_input, parts, fit=False)
 
