@@ -55,6 +55,10 @@ class TypeTypeApp(ctk.CTk):
     FONT_UI = "Microsoft YaHei UI"
     FONT_MONO = "Cascadia Mono"
 
+    # 不需要输入的字符：引号只是排版包裹。
+    # 注意不含 ’（U+2019），本书中它 2095 次全部用作缩写符（couldn’t / They’d）。
+    SKIP_CHARS = "“”\"‘"
+
     def __init__(
         self,
         sentences,
@@ -90,7 +94,6 @@ class TypeTypeApp(ctk.CTk):
         self.current_word_idx = 0
         self.display_words = []  # words split by space (for audio key)
         self._cmp_to_disp = []  # compare_sentence 下标 -> 原文显示下标
-        self._skip_offset = 0  # 句首无需输入的字符数（如开引号）
 
         # Prefetch state: cache for next sentence
         self._prefetch_cache = {}  # index -> {sentence, translation, words}
@@ -196,6 +199,8 @@ class TypeTypeApp(ctk.CTk):
         self.txt_input = self._make_text(inner, 3, 29, self.SUCCESS, self.FONT_MONO)
         self.txt_input.grid(row=2, column=0, sticky="ew", pady=(28, 0))
         self.txt_input.tag_configure("typed", foreground=self.SUCCESS)
+        # 自动跳过的引号保持暗色，与"尚未输入"视觉一致
+        self.txt_input.tag_configure("skipped", foreground=self.GHOST)
         # 光标用背景色块覆盖下一个待输入字符，避免插入额外字符导致串位
         self.txt_input.tag_configure("caret", background=self.ACCENT, foreground=self.BG)
         self.txt_input.tag_configure("ghost", foreground=self.GHOST)
@@ -334,10 +339,20 @@ class TypeTypeApp(ctk.CTk):
             self._fit_height(widget)
 
     def _fit_height(self, widget):
-        """按实际换行数收紧行高，避免多余空白。"""
+        """按实际折行数收紧行高，避免多余空白或被裁掉。
+
+        不用 count(-displaylines)：它只统计可见区域内的行，行高越小结果越少，
+        会形成"越裁越少"的循环。这里按 display line 索引递推，结果与可见高度无关。
+        """
         widget.update_idletasks()
-        counted = widget.count("1.0", "end-1c", "displaylines")
-        rows = max(1, int(counted[0]) if counted else 1)
+        rows = 1
+        index = widget.index("1.0")
+        while rows < 100:
+            nxt = widget.index(f"{index} + 1 display lines")
+            if widget.compare(nxt, ">=", "end") or nxt == index:
+                break
+            rows += 1
+            index = nxt
         if int(widget.cget("height")) != rows:
             widget.configure(height=rows)
 
@@ -424,9 +439,9 @@ class TypeTypeApp(ctk.CTk):
             display_index += 1
         mapping.append(display_index)
         self._cmp_to_disp = mapping
-        # 开引号只是排版包裹，不作为输入内容：自动跳过，从第一个字母开始
-        self._skip_offset = 1 if self.compare_sentence[:1] in ("“", '"') else 0
-        self.cursor_pos = self._skip_offset
+        self.cursor_pos = 0
+        # 引号只是排版包裹，不作为输入内容：自动跳过
+        self._skip_quotes()
         self.display_words = (
             self.compare_sentence.split()
         )  # 展开后的单词（与词边界一致）
@@ -440,6 +455,8 @@ class TypeTypeApp(ctk.CTk):
         self._fit_height(self.txt_input)
         self._highlight_word()
         self.lbl_hint.configure(text="")
+        # 首次测量可能发生在布局完成前，等空闲时再校正一次折行高度
+        self.after_idle(self._refit_texts)
 
         # Ensure keyboard focus on hidden input sink
         self._key_sink.focus_set()
@@ -546,6 +563,9 @@ class TypeTypeApp(ctk.CTk):
         if ord(ch) < 32:
             return "break"
 
+        self._skip_quotes()
+        if self.cursor_pos >= len(self.compare_sentence):
+            return "break"
         expected = self._normalize_char(self.compare_sentence[self.cursor_pos])
         typed = self._normalize_char(ch)
 
@@ -557,6 +577,7 @@ class TypeTypeApp(ctk.CTk):
 
         if correct:
             self.cursor_pos += 1
+            self._skip_quotes()
             self._update_input_display()
 
             # Check if we moved to a new word segment
@@ -577,7 +598,8 @@ class TypeTypeApp(ctk.CTk):
             # Wrong character: reset to start of current word
             if self.word_boundaries:
                 start, end = self.word_boundaries[self.current_word_idx]
-                self.cursor_pos = max(start, self._skip_offset)
+                self.cursor_pos = start
+                self._skip_quotes()
                 self._update_input_display()
             self._flash_error()
 
@@ -617,6 +639,9 @@ class TypeTypeApp(ctk.CTk):
         if not self.word_boundaries or not self._cmp_to_disp:
             return
         start, end = self.word_boundaries[self.current_word_idx]
+        # 前导引号已自动跳过，不计入当前单词的高亮范围
+        while start < end and self.compare_sentence[start] in self.SKIP_CHARS:
+            start += 1
         # 尾部空格不参与高亮，视觉上更贴近单词本身
         while end > start and self.compare_sentence[end - 1] == " ":
             end -= 1
@@ -630,16 +655,28 @@ class TypeTypeApp(ctk.CTk):
             f"1.0 + {end_display} chars",
         )
 
+    def _skip_quotes(self):
+        """把光标推进到下一个需要输入的字符，跳过引号。"""
+        text = self.compare_sentence
+        total = len(text)
+        while self.cursor_pos < total and text[self.cursor_pos] in self.SKIP_CHARS:
+            self.cursor_pos += 1
+
+    def _typed_runs(self, text):
+        """把已输入文本按「跳过的引号 / 实际输入」切成 (片段, 标签)。"""
+        runs = []
+        for ch in text:
+            tag = "skipped" if ch in self.SKIP_CHARS else "typed"
+            if runs and runs[-1][1] == tag:
+                runs[-1][0] += ch
+            else:
+                runs.append([ch, tag])
+        return [(chunk, tag) for chunk, tag in runs]
+
     def _update_input_display(self):
         """刷新输入行：已输入、光标所在的待输入字符、其余未输入字符。"""
-        skip = self._skip_offset
-        typed = self.compare_sentence[skip : self.cursor_pos]
+        parts = list(self._typed_runs(self.compare_sentence[: self.cursor_pos]))
         rest = self.compare_sentence[self.cursor_pos :]
-        parts = []
-        if skip:
-            parts.append((self.compare_sentence[:skip], "ghost"))
-        if typed:
-            parts.append((typed, "typed"))
         if rest:
             # 光标覆盖当前待输入的字符，不额外占用位置，保证与原文逐字对齐
             parts.append((rest[0], "caret"))
