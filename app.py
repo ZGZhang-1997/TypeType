@@ -1,15 +1,12 @@
 """主界面模块，负责窗口布局、打字判定、预加载和流程切换。"""
 
 import enum
-import re
 import threading
-from concurrent.futures import ThreadPoolExecutor, Future
+from concurrent.futures import ThreadPoolExecutor
 
 import customtkinter as ctk
 
-from audio_manager import AudioManager
 from progress import save_progress
-from translator import DeepLTranslator
 
 
 class State(enum.Enum):
@@ -45,7 +42,8 @@ class TypeTypeApp(ctk.CTk):
         self.test_mode = test_mode
 
         # Typing state
-        self.sentence = ""
+        self.sentence = ""  # 原文（用于显示，可能含 …）
+        self.compare_sentence = ""  # … 展开为 ...（用于打字判定）
         self.cursor_pos = 0
         self.word_boundaries = []  # [(start, end), ...]
         self.current_word_idx = 0
@@ -54,7 +52,6 @@ class TypeTypeApp(ctk.CTk):
         # Prefetch state: cache for next sentence
         self._prefetch_cache = {}  # index -> {sentence, translation, words}
         self._prefetch_executor = ThreadPoolExecutor(max_workers=2)
-        self._prefetch_future = None
 
         self._setup_ui()
         # Use a hidden Entry to reliably capture keyboard input
@@ -79,8 +76,6 @@ class TypeTypeApp(ctk.CTk):
         self.resizable(True, True)
 
         self.update_idletasks()
-        sw = self.winfo_screenwidth()
-        sh = self.winfo_screenheight()
         w = 1500
         h = 400
         x = 120
@@ -137,7 +132,6 @@ class TypeTypeApp(ctk.CTk):
         self.lbl_input.grid(row=2, column=0, sticky="new", pady=(15, 0))
 
         # Dynamic wraplength: bind to window resize
-        self._container = container
         self.bind("<Configure>", self._on_window_resize)
 
         # Status bar
@@ -250,9 +244,13 @@ class TypeTypeApp(ctk.CTk):
     def _display_sentence(self, sentence, translation, words):
         """将当前句子的文本、翻译和输入状态显示到界面上。"""
         self.sentence = sentence
+        # 用于比对版本：将 … 展开为 ...，让用户打三个句号即可匹配
+        self.compare_sentence = sentence.replace("…", "...")
         self.cursor_pos = 0
-        self.display_words = words
-        self.word_boundaries = self._compute_word_boundaries(sentence)
+        self.display_words = (
+            self.compare_sentence.split()
+        )  # 展开后的单词（与词边界一致）
+        self.word_boundaries = self._compute_word_boundaries(self.compare_sentence)
         self.current_word_idx = 0
         self.app_state = State.TYPING
 
@@ -299,7 +297,7 @@ class TypeTypeApp(ctk.CTk):
                 "words": words,
             }
 
-        self._prefetch_future = self._prefetch_executor.submit(_prefetch)
+        self._prefetch_executor.submit(_prefetch)
 
     # ── Word boundary computation ─────────────────────────────────
 
@@ -363,7 +361,7 @@ class TypeTypeApp(ctk.CTk):
         if ord(ch) < 32:
             return "break"
 
-        expected = self._normalize_char(self.sentence[self.cursor_pos])
+        expected = self._normalize_char(self.compare_sentence[self.cursor_pos])
         typed = self._normalize_char(ch)
 
         # 测试模式：按 't' 视为正确，其他键视为错误
@@ -384,8 +382,8 @@ class TypeTypeApp(ctk.CTk):
                 self.current_word_idx = new_word_idx
                 self.audio.transition_to_word(self.display_words[new_word_idx])
 
-            # Check if sentence is complete
-            if self.cursor_pos >= len(self.sentence):
+            # Check if sentence is complete (使用 compare_sentence 的长度判断)
+            if self.cursor_pos >= len(self.compare_sentence):
                 self.app_state = State.SENTENCE_COMPLETE
                 self.audio.play_sentence()
                 self._poll_sentence_played()
@@ -401,7 +399,7 @@ class TypeTypeApp(ctk.CTk):
 
     def _get_word_index(self, pos):
         """根据字符位置返回所在的单词片段索引。"""
-        for i, (start, end) in enumerate(self.word_boundaries):
+        for i, (_, end) in enumerate(self.word_boundaries):
             if pos < end:
                 return i
         return len(self.word_boundaries) - 1
@@ -448,10 +446,10 @@ class TypeTypeApp(ctk.CTk):
 
     def _update_input_display(self):
         """刷新输入行，显示已输入部分与光标位置。"""
-        typed = self.sentence[: self.cursor_pos]
-        remaining_len = len(self.sentence) - self.cursor_pos
+        typed = self.compare_sentence[: self.cursor_pos]
+        remaining_len = len(self.compare_sentence) - self.cursor_pos
         if remaining_len > 0:
-            # Pad with spaces to keep same width as original sentence
+            # Pad with spaces to keep same width as compare sentence
             self.lbl_input.configure(text=typed + "\u258f" + " " * (remaining_len - 1))
         else:
             self.lbl_input.configure(text=typed)

@@ -1,6 +1,0 @@
-customtkinter
-pyttsx3
-edge-tts
-pygame-ce
-deepl
-nltk

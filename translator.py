@@ -12,7 +12,7 @@ def _default_cache_dir():
     """返回翻译缓存目录，兼容源码运行和打包运行。"""
     if getattr(sys, "frozen", False):
         return os.path.join(os.path.dirname(sys.executable), "data")
-    return "data"
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 
 
 class DeepLTranslator:

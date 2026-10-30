@@ -1,0 +1,18 @@
+[project]
+name = "typetotype"
+version = "0.1.0"
+description = "英语打字练习应用 - 通过打字跟读英文书籍来提升英语能力"
+requires-python = ">=3.10"
+dependencies = [
+    "customtkinter>=5.2.0",
+    "edge-tts>=6.1.0",
+    "pyttsx3>=2.90",
+    "pygame>=2.5.0,<2.6",
+    "nltk>=3.8.0",
+    "deepl>=1.16.0",
+]
+
+[dependency-groups]
+dev = [
+    "pyinstaller>=6.0.0",
+]

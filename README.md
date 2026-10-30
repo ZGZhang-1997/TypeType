@@ -23,14 +23,8 @@
 ## 安装
 
 ```bash
-# 创建虚拟环境
-python -m venv venv
-
-# 激活虚拟环境
-venv\Scripts\activate
-
-# 安装依赖
-pip install -r requirements.txt
+# 创建虚拟环境并安装依赖（依赖声明见 pyproject.toml，版本锁定见 uv.lock）
+uv sync
 ```
 
 ## 配置
@@ -69,9 +63,10 @@ python main.py
 ├── text_processor.py  # 书籍加载与分句
 ├── translator.py      # DeepL 翻译与缓存
 ├── progress.py        # 进度存取
-├── config.ini         # 配置文件
-├── requirements.txt   # Python 依赖
-└── data/              # 运行时数据（自动生成）
+├── pyproject.toml     # 依赖声明
+├── TypeType.spec      # PyInstaller 打包配置
+├── config.ini         # 本地配置（不入库，首次运行自动生成）
+└── data/              # 运行时数据（自动生成，不入库）
     ├── progress.json
     ├── translation_cache.json
     └── audio_cache/
@@ -84,6 +79,6 @@ python main.py
 | customtkinter | GUI 界面 |
 | pyttsx3 | 单词语音生成（wav） |
 | edge-tts | 句子语音生成（mp3） |
-| pygame-ce | 音频播放 |
+| pygame | 音频播放 |
 | deepl | DeepL 翻译 API |
 | nltk | 英文分句 |

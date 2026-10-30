@@ -1,5 +1,6 @@
 """音频模块，负责生成单词/句子音频并控制播放时序。"""
 
+import hashlib
 import os
 import re
 import sys
@@ -9,6 +10,11 @@ import time
 import edge_tts
 import pyttsx3
 import pygame
+
+
+def _is_usable(path):
+    """缓存音频是否可用：必须存在且非空（0 字节文件会令播放器报错）。"""
+    return os.path.exists(path) and os.path.getsize(path) > 0
 
 
 class AudioManager:
@@ -47,8 +53,9 @@ class AudioManager:
 
     # ── Audio generation ──────────────────────────────────────────
 
-    def pregenerate_files(self, sentence, words):
-        """只生成音频文件，不修改当前播放状态。"""
+    @staticmethod
+    def _bare_words(words):
+        """提取可朗读的裸单词（去标点、转小写、按首次出现顺序去重）。"""
         seen = set()
         bare_words = []
         for w in words:
@@ -56,6 +63,20 @@ class AudioManager:
             if bare and bare not in seen:
                 seen.add(bare)
                 bare_words.append(bare)
+        return bare_words
+
+    def _sentence_path(self, sentence):
+        """返回整句音频的缓存文件路径。
+
+        用 MD5 而非内置 hash()：后者对 str 在每个进程中加盐随机化，
+        会导致每次启动都无法命中已有缓存，且缓存目录无限膨胀。
+        """
+        digest = hashlib.md5(sentence.encode("utf-8")).hexdigest()
+        return os.path.join(self._tmp_dir, f"sent_{digest}.mp3")
+
+    def pregenerate_files(self, sentence, words):
+        """只生成音频文件，不修改当前播放状态。"""
+        bare_words = self._bare_words(words)
 
         def _generate_words():
             engine = pyttsx3.init()
@@ -70,10 +91,8 @@ class AudioManager:
         gen_thread = threading.Thread(target=_generate_words, daemon=True)
         gen_thread.start()
 
-        sentence_path = os.path.join(
-            self._tmp_dir, f"sent_{hash(sentence) & 0xFFFFFFFF:08x}.mp3"
-        )
-        if not os.path.exists(sentence_path):
+        sentence_path = self._sentence_path(sentence)
+        if not _is_usable(sentence_path):
             comm = edge_tts.Communicate(sentence, self._voice)
             comm.save_sync(sentence_path)
 
@@ -90,28 +109,17 @@ class AudioManager:
         # Generate files (skips if already exist from prefetch)
         self.pregenerate_files(sentence, words)
 
-        # Collect bare words
-        seen = set()
-        bare_words = []
-        for w in words:
-            bare = re.sub(r"[^a-zA-Z']", "", w).lower()
-            if bare and bare not in seen:
-                seen.add(bare)
-                bare_words.append(bare)
-
         # Load word sounds into pygame
-        for bare in bare_words:
+        for bare in self._bare_words(words):
             path = os.path.join(self._tmp_dir, f"word_{bare}.wav")
-            if os.path.exists(path) and os.path.getsize(path) > 0:
+            if _is_usable(path):
                 try:
                     self._word_sounds[bare] = pygame.mixer.Sound(path)
                 except Exception:
                     pass
 
-        sentence_path = os.path.join(
-            self._tmp_dir, f"sent_{hash(sentence) & 0xFFFFFFFF:08x}.mp3"
-        )
-        if os.path.exists(sentence_path):
+        sentence_path = self._sentence_path(sentence)
+        if _is_usable(sentence_path):
             self._sentence_audio = sentence_path
 
     # ── Playback control ──────────────────────────────────────────
