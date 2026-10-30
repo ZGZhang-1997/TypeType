@@ -212,7 +212,11 @@ class TypeTypeApp(ctk.CTk):
 
             # Audio still needs to be prepared (can't prefetch pygame Sounds across calls)
             def _bg_audio():
-                self.audio.prepare_sentence(cached["sentence"], cached["words"])
+                try:
+                    self.audio.prepare_sentence(cached["sentence"], cached["words"])
+                except Exception:
+                    # 音频生成失败不应阻塞正文显示
+                    pass
                 self.after(
                     0,
                     self._display_sentence,
@@ -236,7 +240,11 @@ class TypeTypeApp(ctk.CTk):
                 self.audio.prepare_sentence, sentence, words
             )
             translation = translate_future.result()
-            audio_future.result()
+            try:
+                audio_future.result()
+            except Exception:
+                # 音频生成失败（如 TTS 服务不可用）时仍然显示句子
+                pass
             self.after(0, self._display_sentence, sentence, translation, words)
 
         threading.Thread(target=_bg, daemon=True).start()
@@ -290,7 +298,10 @@ class TypeTypeApp(ctk.CTk):
                 self.audio.pregenerate_files, sentence, words
             )
             translation = translate_future.result()
-            audio_future.result()
+            try:
+                audio_future.result()
+            except Exception:
+                pass  # 预取失败时下次会重新生成
             self._prefetch_cache[index] = {
                 "sentence": sentence,
                 "translation": translation,
