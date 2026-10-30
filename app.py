@@ -56,9 +56,10 @@ class TypeTypeApp(ctk.CTk):
     FONT_UI = "Microsoft YaHei UI"
     FONT_MONO = "Cascadia Mono"
 
-    # 不需要输入的字符：引号只是排版包裹。
+    # 不需要输入的字符：引号与空格只是排版分隔。
+    # 空格自动跳过，避免空格键未被捕获时整句卡在空格上（数字因此被判错的根因）。
     # 注意不含 ’（U+2019），本书中它 2095 次全部用作缩写符（couldn’t / They’d）。
-    SKIP_CHARS = "“”\"‘"
+    SKIP_CHARS = "“”\"‘ "
 
     def __init__(
         self,
@@ -442,8 +443,8 @@ class TypeTypeApp(ctk.CTk):
         mapping.append(display_index)
         self._cmp_to_disp = mapping
         self.cursor_pos = 0
-        # 引号只是排版包裹，不作为输入内容：自动跳过
-        self._skip_quotes()
+        # 引号与空格只是排版分隔，不作为输入内容：自动跳过
+        self._skip_ignorable()
         self.display_words = (
             self.compare_sentence.split()
         )  # 展开后的单词（与词边界一致）
@@ -590,7 +591,11 @@ class TypeTypeApp(ctk.CTk):
         if ord(ch) < 32:
             return "break"
 
-        self._skip_quotes()
+        if ch.isspace():
+            # 空格已自动跳过，按下空格不作为输入内容
+            return "break"
+
+        self._skip_ignorable()
         if self.cursor_pos >= len(self.compare_sentence):
             return "break"
         expected = self._normalize_char(self.compare_sentence[self.cursor_pos])
@@ -604,7 +609,7 @@ class TypeTypeApp(ctk.CTk):
 
         if correct:
             self.cursor_pos += 1
-            self._skip_quotes()
+            self._skip_ignorable()
             self._update_input_display()
 
             # Check if we moved to a new word segment
@@ -626,7 +631,7 @@ class TypeTypeApp(ctk.CTk):
             if self.word_boundaries:
                 start, end = self.word_boundaries[self.current_word_idx]
                 self.cursor_pos = start
-                self._skip_quotes()
+                self._skip_ignorable()
                 self._update_input_display()
             self._flash_error()
 
@@ -682,8 +687,8 @@ class TypeTypeApp(ctk.CTk):
             f"1.0 + {end_display} chars",
         )
 
-    def _skip_quotes(self):
-        """把光标推进到下一个需要输入的字符，跳过引号。"""
+    def _skip_ignorable(self):
+        """把光标推进到下一个需要输入的字符，跳过引号与空格。"""
         text = self.compare_sentence
         total = len(text)
         while self.cursor_pos < total and text[self.cursor_pos] in self.SKIP_CHARS:
